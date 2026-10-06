@@ -1,0 +1,6 @@
+{
+  "name": "CardScan AI - Visiting Card OCR & Contact Manager",
+  "description": "Cross-platform visiting card OCR mobile app with intelligent AI contact extraction, review & edit validation, duplicate detection, and contact directory.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
