@@ -86,10 +86,13 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
       const image = new Image();
       image.onload = () => {
         const maxDimension = 2048;
-        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const rotateToLandscape = image.naturalHeight > image.naturalWidth;
+        const sourceWidth = rotateToLandscape ? image.naturalHeight : image.naturalWidth;
+        const sourceHeight = rotateToLandscape ? image.naturalWidth : image.naturalHeight;
+        const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
         const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+        canvas.height = Math.max(1, Math.round(sourceHeight * scale));
         const context = canvas.getContext('2d');
 
         if (!context) {
@@ -97,7 +100,13 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
           return;
         }
 
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        if (rotateToLandscape) {
+          context.translate(canvas.width / 2, canvas.height / 2);
+          context.rotate(Math.PI / 2);
+          context.drawImage(image, -canvas.height / 2, -canvas.width / 2, canvas.height, canvas.width);
+        } else {
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        }
         setCapturedPreview(canvas.toDataURL('image/jpeg', 0.92));
         setCapturedText(null);
         setWebcamError(null);

@@ -123,7 +123,7 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 };
 
-const geminiTimeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 45_000);
+const geminiRequestTimeoutMs = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 20_000);
 
 const toContact = (row: any): Contact => ({
   id: row.id,
@@ -483,8 +483,17 @@ Also provide a confidence score (0.0 to 1.0) for each field in "fieldConfidences
         });
       }
 
-      const response = await withTimeout(ai!.models.generateContent({
-        model: process.env.AI_MODEL || 'gemini-3.8-flash',
+      const models = [...new Set([
+        process.env.AI_MODEL || 'gemini-3.8-flash',
+        process.env.AI_FALLBACK_MODEL || 'gemini-3.5-flash-lite',
+      ])];
+      let response: any;
+      let lastGeminiError: unknown;
+
+      for (const model of models) {
+        try {
+          response = await withTimeout(ai!.models.generateContent({
+        model,
         contents: { parts },
         config: {
           responseMimeType: 'application/json',
@@ -520,7 +529,15 @@ Also provide a confidence score (0.0 to 1.0) for each field in "fieldConfidences
             required: ['name', 'company'],
           },
         },
-      }), geminiTimeoutMs);
+          }), geminiRequestTimeoutMs);
+          break;
+        } catch (error: any) {
+          lastGeminiError = error;
+          console.warn(`Gemini model ${model} failed; trying the next configured model:`, error?.message);
+        }
+      }
+
+      if (!response) throw lastGeminiError || new Error('All configured Gemini models failed.');
 
       const parsedJson = JSON.parse(response.text || '{}');
       if (parsedJson.rawText) {
