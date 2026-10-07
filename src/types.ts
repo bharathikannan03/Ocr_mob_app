@@ -64,13 +64,3 @@ export interface ScanLog {
   ocrConfidence: number;
   createdAt: string;
 }
-
-export interface SampleCard {
-  id: string;
-  name: string;
-  company: string;
-  role: string;
-  previewUrl: string;
-  rawText: string;
-  tag: string;
-}

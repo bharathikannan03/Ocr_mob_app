@@ -16,12 +16,8 @@ import { Contact, ExtractedContact, FieldConfidences, ScanLog, User } from './ty
 
 export default function App() {
   // Navigation & User State
-  const [currentUser, setCurrentUser] = useState<User | null>({
-    id: 'u-001-demo',
-    name: 'Alex Turner',
-    email: 'alex@example.com',
-  });
-  const [authToken, setAuthToken] = useState<string | null>('u-001-demo');
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
 
   const [currentTab, setCurrentTab] = useState<'home' | 'scan' | 'contacts' | 'history' | 'specs'>('home');
   const [scanFlowState, setScanFlowState] = useState<'idle' | 'processing' | 'review'>('idle');
@@ -48,7 +44,8 @@ export default function App() {
 
   // Load contacts and scans from backend with active auth token
   const loadData = async (token?: string) => {
-    const activeToken = token || authToken || 'u-001-demo';
+    const activeToken = token || authToken;
+    if (!activeToken) return;
     try {
       const [contactsRes, scansRes] = await Promise.all([
         fetch('/api/contacts', {
@@ -101,7 +98,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
           imageBase64: imageData,
@@ -120,7 +117,7 @@ export default function App() {
     } catch (err) {
       console.warn('Extraction fallback:', err);
       setExtractedData({
-        name: 'Scanned Contact',
+        name: '',
         designation: '',
         company: '',
         email: '',
@@ -150,7 +147,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
           email: contactData.email,
@@ -184,7 +181,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
           ...contactData,
@@ -217,7 +214,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify(contactData),
       });
@@ -240,7 +237,7 @@ export default function App() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify(updated),
       });
@@ -261,7 +258,7 @@ export default function App() {
       const res = await fetch(`/api/contacts/${contactId}`, {
         method: 'DELETE',
         headers: {
-          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+          Authorization: `Bearer ${authToken}`,
         },
       });
       const json = await res.json();

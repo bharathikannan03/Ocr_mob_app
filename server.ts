@@ -90,116 +90,24 @@ const users: Map<string, User> = new Map();
 const contacts: Map<string, Contact> = new Map();
 const scanLogs: ScanLog[] = [];
 
-// Seed default user for immediate testability
-const defaultUserId = 'u-001-demo';
-users.set(defaultUserId, {
-  id: defaultUserId,
-  name: 'Alex Turner',
-  email: 'alex@example.com',
-  passwordHash: mockPasswordHash('Password123!'),
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-});
-
-// Seed sample contacts
-const seedContacts: Omit<Contact, 'id' | 'userId' | 'createdAt' | 'updatedAt'>[] = [
-  {
-    name: 'Raj Kumar',
-    designation: 'Senior Software Engineer',
-    company: 'ABC Technologies Pvt Ltd',
-    email: 'raj@abc.com',
-    phone: '+91 9876543210',
-    website: 'https://abc.com',
-    address: 'Block B, Tidel Park, Tharamani',
-    city: 'Chennai',
-    state: 'Tamil Nadu',
-    country: 'India',
-    linkedin: 'https://linkedin.com/in/rajkumar',
-    notes: 'Met at Asia Tech Summit 2026. Lead engineer on distributed cloud.',
-    source: 'scanned',
-    rawOcrText: "RAJ KUMAR\nSenior Software Engineer\nABC Technologies Pvt Ltd\n+91 9876543210\nraj@abc.com\nwww.abc.com\nChennai, India",
-    ocrConfidence: 0.96,
-  },
-  {
-    name: 'Sarah Jenkins',
-    designation: 'VP of Product Partnerships',
-    company: 'Apex Cloud Global',
-    email: 'sarah.j@apexcloud.io',
-    phone: '+1 (415) 890-2341',
-    website: 'https://apexcloud.io',
-    address: '500 Howard Street, Suite 400',
-    city: 'San Francisco',
-    state: 'California',
-    country: 'United States',
-    linkedin: 'https://linkedin.com/in/sarahjenkins-apex',
-    notes: 'Key partner for enterprise mobile integration.',
-    source: 'scanned',
-    rawOcrText: "SARAH JENKINS\nVP of Product Partnerships\nApex Cloud Global\n+1 (415) 890-2341\nsarah.j@apexcloud.io\nwww.apexcloud.io\nSan Francisco, CA",
-    ocrConfidence: 0.94,
-  },
-  {
-    name: 'Dr. Hiroshi Tanaka',
-    designation: 'Chief Medical Officer',
-    company: 'NeoHealth Robotics Corp',
-    email: 'h.tanaka@neohealth.jp',
-    phone: '+81 3 5555 0192',
-    website: 'https://neohealth.jp',
-    address: 'Roppongi Hills Mori Tower 24F',
-    city: 'Tokyo',
-    state: 'Tokyo',
-    country: 'Japan',
-    linkedin: 'https://linkedin.com/in/hiroshi-tanaka-md',
-    notes: 'Discussed healthcare telemetry API.',
-    source: 'scanned',
-    rawOcrText: "DR. HIROSHI TANAKA, M.D.\nChief Medical Officer\nNeoHealth Robotics Corp\n+81 3 5555 0192\nh.tanaka@neohealth.jp\nwww.neohealth.jp\nTokyo, Japan",
-    ocrConfidence: 0.98,
-  },
-];
-
-seedContacts.forEach((sc, idx) => {
-  const cid = `c-00${idx + 1}`;
-  contacts.set(cid, {
-    ...sc,
-    id: cid,
-    userId: defaultUserId,
-    createdAt: new Date(Date.now() - (idx + 1) * 3600000 * 24).toISOString(),
-    updatedAt: new Date(Date.now() - (idx + 1) * 3600000 * 24).toISOString(),
-  });
-
-  scanLogs.push({
-    id: `scan-00${idx + 1}`,
-    userId: defaultUserId,
-    contactId: cid,
-    contactName: sc.name,
-    companyName: sc.company,
-    rawOcrText: sc.rawOcrText,
-    ocrConfidence: sc.ocrConfidence,
-    createdAt: new Date(Date.now() - (idx + 1) * 3600000 * 24).toISOString(),
-  });
-});
-
 // -------------------------------------------------------------
 // Auth Middleware
 // -------------------------------------------------------------
 const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
-    // For convenience in dev testing, fallback to default user if no token provided
-    (req as any).user = users.get(defaultUserId);
-    return next();
+    return res.status(401).json({ success: false, error: { code: 'AUTH_REQUIRED', message: 'Authentication is required' } });
   }
 
   const token = authHeader.replace(/^Bearer\s+/i, '');
   if (!token) {
-    (req as any).user = users.get(defaultUserId);
-    return next();
+    return res.status(401).json({ success: false, error: { code: 'AUTH_REQUIRED', message: 'Authentication is required' } });
   }
 
-  // Token is user ID or simulated signed token
-  let foundUser = users.get(token);
+  // Token is a user ID in the current local-auth implementation.
+  const foundUser = users.get(token);
   if (!foundUser) {
-    // default to demo user
-    foundUser = users.get(defaultUserId);
+    return res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
   }
 
   (req as any).user = foundUser;

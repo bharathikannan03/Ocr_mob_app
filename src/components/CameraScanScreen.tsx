@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, X, RefreshCw, Upload, Zap, Image as ImageIcon, CheckCircle, AlertCircle, Sparkles } from 'lucide-react';
-import { SAMPLE_CARDS } from '../data/sampleCards';
-import { SampleCard } from '../types';
+import { Camera, X, RefreshCw, Upload, Zap, Image as ImageIcon, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface CameraScanScreenProps {
   onCapture: (imageData: string, rawText?: string) => void;
@@ -13,7 +11,6 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
   const [webcamError, setWebcamError] = useState<string | null>(null);
   const [torchOn, setTorchOn] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [selectedSample, setSelectedSample] = useState<SampleCard | null>(SAMPLE_CARDS[0]);
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [capturedText, setCapturedText] = useState<string | null>(null);
 
@@ -39,7 +36,7 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
         })
         .catch((err) => {
           console.warn('Webcam permission denied or unsupported:', err);
-          setWebcamError('Camera access not available in this frame. Use sample cards or upload an image.');
+          setWebcamError('Camera access not available in this frame. Upload an image instead.');
           setUseWebcam(false);
         });
     }
@@ -84,61 +81,9 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
     reader.readAsDataURL(file);
   };
 
-  const handleSelectSampleCard = (sample: SampleCard) => {
-    setSelectedSample(sample);
-    // Draw sample card to canvas to create base64
-    const canvas = document.createElement('canvas');
-    canvas.width = 700;
-    canvas.height = 400;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      // Draw professional business card graphic
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, 700, 400);
-
-      // Card accent line
-      ctx.fillStyle = '#2563eb';
-      ctx.fillRect(0, 0, 16, 400);
-
-      // Text elements
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 28px sans-serif';
-      ctx.fillText(sample.name.toUpperCase(), 40, 70);
-
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '18px sans-serif';
-      ctx.fillText(sample.role, 40, 105);
-
-      ctx.fillStyle = '#38bdf8';
-      ctx.font = 'bold 20px sans-serif';
-      ctx.fillText(sample.company, 40, 140);
-
-      ctx.fillStyle = '#cbd5e1';
-      ctx.font = '16px monospace';
-      const lines = sample.rawText.split('\n').slice(3);
-      let y = 190;
-      lines.forEach((line) => {
-        if (line.trim()) {
-          ctx.fillText(line, 40, y);
-          y += 28;
-        }
-      });
-
-      const cardDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-      setCapturedPreview(cardDataUrl);
-      setCapturedText(sample.rawText);
-    }
-  };
-
   const confirmCapture = () => {
     if (capturedPreview) {
       onCapture(capturedPreview, capturedText || undefined);
-    } else if (selectedSample) {
-      handleSelectSampleCard(selectedSample);
-      // Wait microtick
-      setTimeout(() => {
-        onCapture(capturedPreview || '', selectedSample.rawText);
-      }, 50);
     }
   };
 
@@ -273,7 +218,7 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
             </div>
           </div>
         ) : (
-          /* Sample Card / Upload Viewfinder */
+          /* Upload Viewfinder */
           <div className="w-full max-w-sm flex flex-col items-center">
             {/* Guide Card Box */}
             <div className="relative w-full aspect-[1.75] rounded-2xl border-2 border-blue-500/80 bg-slate-900/90 p-4 flex flex-col justify-between shadow-2xl overflow-hidden">
@@ -332,35 +277,6 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
         )}
       </div>
 
-      {/* Sample Cards Selector Carousel */}
-      {!capturedPreview && (
-        <div className="px-4 py-2 bg-slate-900 border-t border-slate-800">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-              <Sparkles className="w-3 h-3 text-blue-400" />
-              Realistic Demo Cards
-            </span>
-            <span className="text-[10px] text-slate-500">Tap to load</span>
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-            {SAMPLE_CARDS.map((card) => (
-              <button
-                key={card.id}
-                onClick={() => handleSelectSampleCard(card)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium shrink-0 border transition-all ${
-                  selectedSample?.id === card.id
-                    ? 'bg-blue-600 border-blue-400 text-white shadow-sm'
-                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                <span>{card.name.split(' ')[0]}</span>
-                <span className="text-[10px] opacity-75 ml-1">({card.tag})</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Bottom Shutter & Controls Bar */}
       <div className="p-4 bg-slate-900/90 border-t border-slate-800 z-20">
         <input
@@ -407,8 +323,6 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
               onClick={() => {
                 if (useWebcam) {
                   handleCaptureWebcam();
-                } else if (selectedSample) {
-                  handleSelectSampleCard(selectedSample);
                 }
               }}
               className="w-18 h-18 rounded-full border-4 border-white flex items-center justify-center bg-blue-600 hover:bg-blue-500 active:scale-95 transition-transform shadow-xl shadow-blue-500/30"

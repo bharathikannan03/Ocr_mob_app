@@ -9,8 +9,8 @@ interface AuthScreenProps {
 export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('alex@example.com');
-  const [password, setPassword] = useState('Password123!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -62,27 +62,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
       }
     } catch (err: any) {
       setError(err?.message || 'Network error occurred');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleQuickDemoLogin = async () => {
-    setEmail('alex@example.com');
-    setPassword('Password123!');
-    setLoading(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'alex@example.com', password: 'Password123!' }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        onAuthSuccess(data.data.accessToken, data.data.user);
-      }
-    } catch (e) {
-      console.warn(e);
     } finally {
       setLoading(false);
     }
@@ -215,19 +194,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthSuccess }) => {
               )}
             </button>
           </form>
-
-          {/* Quick Demo Login Option */}
-          {mode === 'login' && (
-            <div className="mt-3 pt-3 border-t border-slate-700/60">
-              <button
-                type="button"
-                onClick={handleQuickDemoLogin}
-                className="w-full py-2 rounded-xl bg-slate-700/80 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors border border-slate-600"
-              >
-                <span>Quick Sign In as Alex Turner (Demo)</span>
-              </button>
-            </div>
-          )}
 
           {/* Mode Switcher */}
           <div className="mt-4 text-center text-xs text-slate-400">
