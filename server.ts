@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -13,8 +14,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Local project directory storage for visiting card images
+const UPLOAD_DIR = path.join(__dirname, 'uploads', 'cards');
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // -------------------------------------------------------------
 // Gemini AI Initialization
@@ -352,6 +360,82 @@ app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
   });
 });
 
+app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Email address is required' },
+    });
+  }
+
+  // Simulated password reset token
+  const resetToken = `reset-${Date.now()}`;
+  res.json({
+    success: true,
+    message: 'Password reset link sent to registered email address',
+    data: { resetToken },
+  });
+});
+
+app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+  const { email, newPassword } = req.body;
+  if (!email || !newPassword) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Email and new password are required' },
+    });
+  }
+
+  for (const u of users.values()) {
+    if (u.email.toLowerCase() === email.toLowerCase()) {
+      u.passwordHash = mockPasswordHash(newPassword);
+      u.updatedAt = new Date().toISOString();
+      return res.json({
+        success: true,
+        message: 'Password has been successfully reset',
+      });
+    }
+  }
+
+  res.status(404).json({
+    success: false,
+    error: { code: 'USER_NOT_FOUND', message: 'User account not found' },
+  });
+});
+
+app.post('/api/auth/refresh', (req: Request, res: Response) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'TOKEN_REQUIRED', message: 'Refresh token required' },
+    });
+  }
+  const userId = refreshToken.replace('refresh-', '');
+  const user = users.get(userId);
+  if (!user) {
+    return res.status(401).json({
+      success: false,
+      error: { code: 'INVALID_TOKEN', message: 'Invalid or expired refresh token' },
+    });
+  }
+  res.json({
+    success: true,
+    data: {
+      accessToken: user.id,
+      refreshToken: `refresh-${user.id}`,
+    },
+  });
+});
+
+app.post('/api/auth/logout', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    message: 'Logged out successfully',
+  });
+});
+
 // -------------------------------------------------------------
 // OCR & AI Parsing Endpoint
 // -------------------------------------------------------------
@@ -685,6 +769,20 @@ app.post('/api/contacts', authMiddleware, (req: Request, res: Response) => {
   const id = `c-${Date.now()}`;
   const now = new Date().toISOString();
 
+  // Save image to local project directory folder instead of cloud bucket
+  let storedImageUrl = imageUrl;
+  if (imageUrl && imageUrl.startsWith('data:image/')) {
+    try {
+      const base64Data = imageUrl.replace(/^data:image\/\w+;base64,/, '');
+      const filename = `card-${id}.jpg`;
+      const filePath = path.join(UPLOAD_DIR, filename);
+      fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+      storedImageUrl = `/uploads/cards/${filename}`;
+    } catch (err) {
+      console.warn('Failed to save card image to local directory:', err);
+    }
+  }
+
   const newContact: Contact = {
     id,
     userId: user.id,
@@ -702,7 +800,7 @@ app.post('/api/contacts', authMiddleware, (req: Request, res: Response) => {
     notes: notes.trim(),
     source,
     rawOcrText,
-    imageUrl,
+    imageUrl: storedImageUrl,
     ocrConfidence,
     createdAt: now,
     updatedAt: now,
@@ -719,7 +817,7 @@ app.post('/api/contacts', authMiddleware, (req: Request, res: Response) => {
       contactName: newContact.name,
       companyName: newContact.company,
       rawOcrText,
-      imageUrl,
+      imageUrl: storedImageUrl,
       ocrConfidence,
       createdAt: now,
     });

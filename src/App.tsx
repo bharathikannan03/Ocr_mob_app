@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { DeviceFrame } from './components/DeviceFrame';
+import { AuthScreen } from './components/AuthScreen';
 import { HomeScreen } from './components/HomeScreen';
 import { CameraScanScreen } from './components/CameraScanScreen';
 import { ProcessingScreen } from './components/ProcessingScreen';
@@ -8,11 +9,20 @@ import { DuplicateModal } from './components/DuplicateModal';
 import { ContactListScreen } from './components/ContactListScreen';
 import { ContactDetailScreen } from './components/ContactDetailScreen';
 import { EditContactModal } from './components/EditContactModal';
+import { ManualAddContactModal } from './components/ManualAddContactModal';
 import { ScanHistoryScreen } from './components/ScanHistoryScreen';
 import { ArchitectureViewer } from './components/ArchitectureViewer';
-import { Contact, ExtractedContact, FieldConfidences, ScanLog } from './types';
+import { Contact, ExtractedContact, FieldConfidences, ScanLog, User } from './types';
 
 export default function App() {
+  // Navigation & User State
+  const [currentUser, setCurrentUser] = useState<User | null>({
+    id: 'u-001-demo',
+    name: 'Alex Turner',
+    email: 'alex@example.com',
+  });
+  const [authToken, setAuthToken] = useState<string | null>('u-001-demo');
+
   const [currentTab, setCurrentTab] = useState<'home' | 'scan' | 'contacts' | 'history' | 'specs'>('home');
   const [scanFlowState, setScanFlowState] = useState<'idle' | 'processing' | 'review'>('idle');
 
@@ -21,6 +31,7 @@ export default function App() {
   const [scans, setScans] = useState<ScanLog[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [isManualAddOpen, setIsManualAddOpen] = useState(false);
 
   // Active Scan Capture State
   const [capturedImageData, setCapturedImageData] = useState<string | null>(null);
@@ -35,12 +46,17 @@ export default function App() {
     matchType: string;
   } | null>(null);
 
-  // Load initial contacts and scans from backend
-  const loadData = async () => {
+  // Load contacts and scans from backend with active auth token
+  const loadData = async (token?: string) => {
+    const activeToken = token || authToken || 'u-001-demo';
     try {
       const [contactsRes, scansRes] = await Promise.all([
-        fetch('/api/contacts'),
-        fetch('/api/scans'),
+        fetch('/api/contacts', {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        }),
+        fetch('/api/scans', {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        }),
       ]);
       const contactsJson = await contactsRes.json();
       const scansJson = await scansRes.json();
@@ -53,8 +69,26 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    if (authToken) {
+      loadData(authToken);
+    }
+  }, [authToken]);
+
+  // Auth Handler
+  const handleAuthSuccess = (token: string, user: User) => {
+    setAuthToken(token);
+    setCurrentUser(user);
+    loadData(token);
+    setCurrentTab('home');
+  };
+
+  const handleLogout = () => {
+    setAuthToken(null);
+    setCurrentUser(null);
+    setContacts([]);
+    setScans([]);
+    setSelectedContact(null);
+  };
 
   // Handle Card Shutter Capture
   const handleCardCapture = async (imageData: string, rawText?: string) => {
@@ -65,7 +99,10 @@ export default function App() {
       // Call backend Gemini 3.8 OCR / Parser
       const res = await fetch('/api/ocr/extract', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+        },
         body: JSON.stringify({
           imageBase64: imageData,
           rawText: rawText || '',
@@ -82,7 +119,6 @@ export default function App() {
       }
     } catch (err) {
       console.warn('Extraction fallback:', err);
-      // Fallback extracted contact
       setExtractedData({
         name: 'Scanned Contact',
         designation: '',
@@ -109,10 +145,13 @@ export default function App() {
   // Review Screen: Save Trigger with Duplicate Check
   const handleReviewSave = async (contactData: ExtractedContact) => {
     try {
-      // 1. Perform duplicate check
+      // 1. Duplicate check
       const dupRes = await fetch('/api/contacts/check-duplicate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+        },
         body: JSON.stringify({
           email: contactData.email,
           phone: contactData.phone,
@@ -123,7 +162,6 @@ export default function App() {
 
       const dupJson = await dupRes.json();
       if (dupJson.success && dupJson.data.isDuplicate) {
-        // Trigger Duplicate Confirmation Modal
         setDuplicateMatch({
           existingContact: dupJson.data.existingContact,
           incomingContact: contactData,
@@ -132,7 +170,7 @@ export default function App() {
         return;
       }
 
-      // 2. No duplicate found, proceed to save
+      // 2. Save
       await saveContactToBackend(contactData);
     } catch (err) {
       console.error('Error during save check:', err);
@@ -144,7 +182,10 @@ export default function App() {
     try {
       const res = await fetch('/api/contacts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+        },
         body: JSON.stringify({
           ...contactData,
           source: 'scanned',
@@ -167,12 +208,40 @@ export default function App() {
     }
   };
 
-  // Edit existing contact
+  // Manual Contact Add
+  const handleManualContactSave = async (
+    contactData: Omit<Contact, 'id' | 'userId' | 'createdAt' | 'updatedAt'>
+  ) => {
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+        },
+        body: JSON.stringify(contactData),
+      });
+      const json = await res.json();
+      if (json.success) {
+        await loadData();
+        setIsManualAddOpen(false);
+        setSelectedContact(json.data.contact);
+        setCurrentTab('contacts');
+      }
+    } catch (err) {
+      console.error('Failed to save manual contact:', err);
+    }
+  };
+
+  // Edit contact
   const handleUpdateContact = async (updated: Contact) => {
     try {
       const res = await fetch(`/api/contacts/${updated.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+        },
         body: JSON.stringify(updated),
       });
       const json = await res.json();
@@ -191,6 +260,9 @@ export default function App() {
     try {
       const res = await fetch(`/api/contacts/${contactId}`, {
         method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${authToken || 'u-001-demo'}`,
+        },
       });
       const json = await res.json();
       if (json.success) {
@@ -201,6 +273,18 @@ export default function App() {
       console.error('Failed to delete contact:', err);
     }
   };
+
+  // If user is not logged in, show AuthScreen
+  if (!currentUser || !authToken) {
+    return (
+      <DeviceFrame
+        currentTab="home"
+        onTabChange={() => {}}
+      >
+        <AuthScreen onAuthSuccess={handleAuthSuccess} />
+      </DeviceFrame>
+    );
+  }
 
   return (
     <DeviceFrame
@@ -247,6 +331,7 @@ export default function App() {
               setScanFlowState('idle');
               setCurrentTab('scan');
             }}
+            onManualAdd={() => setIsManualAddOpen(true)}
           />
         )
       ) : currentTab === 'scan' ? (
@@ -278,6 +363,7 @@ export default function App() {
       ) : (
         /* Tab: Home Dashboard */
         <HomeScreen
+          userName={currentUser.name}
           contacts={contacts}
           scans={scans}
           onStartScan={() => {
@@ -294,6 +380,8 @@ export default function App() {
           }}
           onViewHistory={() => setCurrentTab('history')}
           onOpenArchitecture={() => setCurrentTab('specs')}
+          onLogout={handleLogout}
+          onManualAdd={() => setIsManualAddOpen(true)}
         />
       )}
 
@@ -323,6 +411,14 @@ export default function App() {
           contact={editingContact}
           onSave={handleUpdateContact}
           onClose={() => setEditingContact(null)}
+        />
+      )}
+
+      {/* Manual Add Contact Modal */}
+      {isManualAddOpen && (
+        <ManualAddContactModal
+          onSave={handleManualContactSave}
+          onClose={() => setIsManualAddOpen(false)}
         />
       )}
     </DeviceFrame>

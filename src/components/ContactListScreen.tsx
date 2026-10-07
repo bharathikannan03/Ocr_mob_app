@@ -11,19 +11,24 @@ import {
   ArrowUpDown,
   Camera,
   Share2,
+  Download,
+  UserPlus,
 } from 'lucide-react';
 import { Contact } from '../types';
+import { exportContactsToCsv } from '../utils/csv';
 
 interface ContactListScreenProps {
   contacts: Contact[];
   onSelectContact: (contact: Contact) => void;
   onNewScan: () => void;
+  onManualAdd?: () => void;
 }
 
 export const ContactListScreen: React.FC<ContactListScreenProps> = ({
   contacts,
   onSelectContact,
   onNewScan,
+  onManualAdd,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'scanned' | 'manual'>('all');
@@ -67,13 +72,31 @@ export const ContactListScreen: React.FC<ContactListScreenProps> = ({
             <h1 className="text-xl font-bold text-slate-900 leading-tight">Contacts</h1>
             <p className="text-xs text-slate-500">{contacts.length} total saved contacts</p>
           </div>
-          <button
-            onClick={onNewScan}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm transition-all"
-          >
-            <Camera className="w-3.5 h-3.5" />
-            <span>Scan New</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            {onManualAdd && (
+              <button
+                onClick={onManualAdd}
+                className="p-2 rounded-xl border border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-slate-50 transition-colors"
+                title="Add Contact Manually"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={() => exportContactsToCsv(contacts)}
+              className="p-2 rounded-xl border border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-slate-50 transition-colors"
+              title="Export Contacts as CSV"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onNewScan}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm transition-all"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Scan</span>
+            </button>
+          </div>
         </div>
 
         {/* Search Bar */}
