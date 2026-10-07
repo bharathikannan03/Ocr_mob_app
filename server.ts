@@ -124,6 +124,9 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T
 };
 
 const geminiRequestTimeoutMs = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 20_000);
+const leadApiBaseUrl = (process.env.LEAD_API_BASE_URL || 'http://localhost:3005').replace(/\/+$/, '');
+const leadApiKey = process.env.LEAD_API_KEY?.trim();
+const leadApiTimeoutMs = Number(process.env.LEAD_API_TIMEOUT_MS || 10_000);
 
 const toContact = (row: any): Contact => ({
   id: row.id,
@@ -160,6 +163,33 @@ const toScanLog = (row: any): ScanLog => ({
   companyName: row.company_name || undefined,
   createdAt: toIsoString(row.created_at),
 });
+
+const splitContactName = (name: string) => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const firstName = parts[0] || '';
+  const lastName = parts.length > 1 ? parts.slice(1).join(' ') : parts[0] || '';
+  return { firstName, lastName };
+};
+
+const normalizeWebsiteUrl = (website: string) => {
+  const value = website.trim();
+  if (!value) return '';
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+};
+
+const getCompanyDomain = (website: string, email: string) => {
+  const normalizedWebsite = normalizeWebsiteUrl(website);
+  if (normalizedWebsite) {
+    try {
+      return new URL(normalizedWebsite).hostname.replace(/^www\./i, '');
+    } catch {
+      // Fall through to email domain.
+    }
+  }
+
+  const emailDomain = email.split('@')[1]?.trim();
+  return emailDomain || '';
+};
 
 // -------------------------------------------------------------
 // Auth Middleware
@@ -631,6 +661,101 @@ app.post('/api/contacts/check-duplicate', authMiddleware, async (req: Request, r
     res.json({ success: true, data: { isDuplicate: false } });
   } catch (error) {
     next(error);
+  }
+});
+
+// -------------------------------------------------------------
+// External Lead API Proxy
+// -------------------------------------------------------------
+app.post('/api/integrations/leads', authMiddleware, async (req: Request, res: Response) => {
+  if (!leadApiKey) {
+    return res.status(503).json({
+      success: false,
+      error: { code: 'LEAD_API_NOT_CONFIGURED', message: 'LEAD_API_KEY is not configured on the server' },
+    });
+  }
+
+  const {
+    name = '',
+    designation = '',
+    company = '',
+    email = '',
+    phone = '',
+    website = '',
+    address = '',
+    city = '',
+    state = '',
+    country = '',
+  } = req.body;
+
+  const { firstName, lastName } = splitContactName(String(name));
+  const companyName = String(company).trim();
+  const contactEmail = String(email).trim();
+
+  if (!companyName || !firstName || !lastName || !contactEmail) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'LEAD_VALIDATION_ERROR',
+        message: 'Company, contact name, and email are required before submitting a lead',
+      },
+    });
+  }
+
+  const normalizedWebsite = normalizeWebsiteUrl(String(website));
+  const payload = {
+    company_name: companyName,
+    contact_first_name: firstName,
+    contact_last_name: lastName,
+    contact_email: contactEmail,
+    contact_phone: String(phone).trim(),
+    contact_designation: String(designation).trim(),
+    website: normalizedWebsite,
+    company_domain: getCompanyDomain(String(website), contactEmail),
+    address: String(address).trim(),
+    city: String(city).trim(),
+    state: String(state).trim(),
+    country: String(country).trim(),
+  };
+
+  try {
+    const leadRes = await fetch(`${leadApiBaseUrl}/api/leads`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': leadApiKey,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(leadApiTimeoutMs),
+    });
+
+    const text = await leadRes.text();
+    let body: any = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = { message: text };
+      }
+    }
+
+    if (!leadRes.ok || body?.success === false || Number(body?.code) >= 400) {
+      const status = leadRes.ok ? 502 : leadRes.status;
+      const message = typeof body?.message === 'string' ? body.message : `Lead API returned ${leadRes.status}`;
+      console.warn('Lead API submission rejected:', status, message);
+      return res.status(status).json({
+        success: false,
+        error: { code: 'LEAD_API_ERROR', message },
+        data: body,
+      });
+    }
+
+    return res.status(leadRes.status).json({ success: true, data: body });
+  } catch (error: any) {
+    return res.status(502).json({
+      success: false,
+      error: { code: 'LEAD_API_UNAVAILABLE', message: error?.message || 'Lead API request failed' },
+    });
   }
 });
 

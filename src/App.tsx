@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { AlertTriangle, X } from 'lucide-react';
 import { DeviceFrame } from './components/DeviceFrame';
 import { AuthScreen } from './components/AuthScreen';
 import { HomeScreen } from './components/HomeScreen';
@@ -29,6 +30,7 @@ export default function App() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [isManualAddOpen, setIsManualAddOpen] = useState(false);
+  const [leadSyncError, setLeadSyncError] = useState<string | null>(null);
 
   // Active Scan Capture State
   const [capturedImageData, setCapturedImageData] = useState<string | null>(null);
@@ -179,6 +181,28 @@ export default function App() {
     }
   };
 
+  const submitLeadIntegration = async (contactData: ExtractedContact) => {
+    try {
+      const res = await fetch('/api/integrations/leads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(contactData),
+      });
+
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error?.message || 'Lead submission failed');
+      }
+      setLeadSyncError(null);
+    } catch (err) {
+      console.warn('Lead API submission failed:', err);
+      setLeadSyncError(`Contact saved in this app, but not sent to the lead system: ${err instanceof Error ? err.message : 'Connection failed'}`);
+    }
+  };
+
   const saveContactToBackend = async (contactData: ExtractedContact) => {
     try {
       const res = await fetch('/api/contacts', {
@@ -198,6 +222,7 @@ export default function App() {
 
       const json = await res.json();
       if (json.success) {
+        await submitLeadIntegration(contactData);
         await loadData();
         setDuplicateMatch(null);
         setScanFlowState('idle');
@@ -297,6 +322,15 @@ export default function App() {
         }
       }}
     >
+      {leadSyncError && (
+        <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p className="min-w-0 flex-1 break-words">{leadSyncError}</p>
+          <button type="button" title="Dismiss notification" aria-label="Dismiss notification" onClick={() => setLeadSyncError(null)} className="shrink-0 p-1">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       {/* Tab: Specs / Architecture */}
       {currentTab === 'specs' ? (
         <ArchitectureViewer onBack={() => setCurrentTab('home')} />
