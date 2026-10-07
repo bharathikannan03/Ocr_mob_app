@@ -4,15 +4,24 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import pg from 'pg';
 import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
+dotenv.config({ path: '.env.development', override: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error('DATABASE_URL is not set. Add it to .env before starting the server.');
+}
+
+const db = new pg.Pool({ connectionString: databaseUrl });
 
 // Local project directory storage for visiting card images
 const UPLOAD_DIR = path.join(__dirname, 'uploads', 'cards');
@@ -27,17 +36,20 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // -------------------------------------------------------------
 // Gemini AI Initialization
 // -------------------------------------------------------------
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || '',
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+const ai = geminiApiKey
+  ? new GoogleGenAI({
+      apiKey: geminiApiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    })
+  : null;
 
 // -------------------------------------------------------------
-// In-Memory PostgreSQL-Compatible Storage
+// PostgreSQL data models
 // -------------------------------------------------------------
 interface User {
   id: string;
@@ -86,14 +98,73 @@ interface ScanLog {
 
 const mockPasswordHash = (pwd: string) => crypto.createHash('sha256').update(pwd).digest('hex');
 
-const users: Map<string, User> = new Map();
-const contacts: Map<string, Contact> = new Map();
-const scanLogs: ScanLog[] = [];
+const toIsoString = (value: Date | string) => new Date(value).toISOString();
+
+const toUser = (row: any): User => ({
+  id: row.id,
+  name: row.name,
+  email: row.email,
+  passwordHash: row.password_hash,
+  createdAt: toIsoString(row.created_at),
+  updatedAt: toIsoString(row.updated_at),
+});
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Gemini request timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+};
+
+const geminiTimeoutMs = Number(process.env.GEMINI_TIMEOUT_MS || 45_000);
+
+const toContact = (row: any): Contact => ({
+  id: row.id,
+  userId: row.user_id,
+  name: row.name,
+  designation: row.designation || '',
+  company: row.company || '',
+  email: row.email || '',
+  phone: row.phone || '',
+  website: row.website || '',
+  address: row.address || '',
+  city: row.city || '',
+  state: row.state || '',
+  country: row.country || '',
+  linkedin: row.linkedin || '',
+  notes: row.notes || '',
+  source: row.source,
+  rawOcrText: row.raw_ocr_text || '',
+  imageUrl: row.image_url || undefined,
+  ocrConfidence: Number(row.ocr_confidence || 0),
+  createdAt: toIsoString(row.created_at),
+  updatedAt: toIsoString(row.updated_at),
+  deletedAt: row.deleted_at ? toIsoString(row.deleted_at) : null,
+});
+
+const toScanLog = (row: any): ScanLog => ({
+  id: row.id,
+  userId: row.user_id,
+  contactId: row.contact_id || undefined,
+  rawOcrText: row.raw_ocr_text,
+  imageUrl: row.image_url || undefined,
+  ocrConfidence: Number(row.ocr_confidence || 0),
+  contactName: row.contact_name || undefined,
+  companyName: row.company_name || undefined,
+  createdAt: toIsoString(row.created_at),
+});
 
 // -------------------------------------------------------------
 // Auth Middleware
 // -------------------------------------------------------------
-const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
+const authMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     return res.status(401).json({ success: false, error: { code: 'AUTH_REQUIRED', message: 'Authentication is required' } });
@@ -105,13 +176,16 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   }
 
   // Token is a user ID in the current local-auth implementation.
-  const foundUser = users.get(token);
-  if (!foundUser) {
-    return res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
+  try {
+    const result = await db.query('SELECT * FROM users WHERE id = $1', [token]);
+    if (result.rowCount === 0) {
+      return res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
+    }
+    (req as any).user = toUser(result.rows[0]);
+    next();
+  } catch (error) {
+    next(error);
   }
-
-  (req as any).user = foundUser;
-  next();
 };
 
 // -------------------------------------------------------------
@@ -184,7 +258,7 @@ function deterministicExtract(rawText: string) {
 // -------------------------------------------------------------
 // Authentication Routes
 // -------------------------------------------------------------
-app.post('/api/auth/register', (req: Request, res: Response) => {
+app.post('/api/auth/register', async (req: Request, res: Response, next: NextFunction) => {
   const { name, email, password } = req.body;
   if (!email || !password || !name) {
     return res.status(400).json({
@@ -193,37 +267,35 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     });
   }
 
-  for (const user of users.values()) {
-    if (user.email.toLowerCase() === email.toLowerCase()) {
+  try {
+    const result = await db.query(
+      `INSERT INTO users (name, email, password_hash)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [name.trim(), email.trim().toLowerCase(), mockPasswordHash(password)],
+    );
+    const newUser = toUser(result.rows[0]);
+    res.status(201).json({
+      success: true,
+      data: {
+        user: { id: newUser.id, name: newUser.name, email: newUser.email },
+        accessToken: newUser.id,
+        refreshToken: `refresh-${newUser.id}`,
+      },
+      message: 'User registered successfully',
+    });
+  } catch (error: any) {
+    if (error.code === '23505') {
       return res.status(400).json({
         success: false,
         error: { code: 'EMAIL_EXISTS', message: 'An account with this email already exists' },
       });
     }
+    next(error);
   }
-
-  const newUser: User = {
-    id: `u-${Date.now()}`,
-    name,
-    email,
-    passwordHash: mockPasswordHash(password),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  users.set(newUser.id, newUser);
-
-  res.status(201).json({
-    success: true,
-    data: {
-      user: { id: newUser.id, name: newUser.name, email: newUser.email },
-      accessToken: newUser.id,
-      refreshToken: `refresh-${newUser.id}`,
-    },
-    message: 'User registered successfully',
-  });
 });
 
-app.post('/api/auth/login', (req: Request, res: Response) => {
+app.post('/api/auth/login', async (req: Request, res: Response, next: NextFunction) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({
@@ -232,30 +304,27 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     });
   }
 
-  let foundUser: User | undefined;
-  for (const u of users.values()) {
-    if (u.email.toLowerCase() === email.toLowerCase()) {
-      foundUser = u;
-      break;
+  try {
+    const result = await db.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email.trim()]);
+    const foundUser = result.rowCount ? toUser(result.rows[0]) : undefined;
+    if (!foundUser || foundUser.passwordHash !== mockPasswordHash(password)) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'AUTH_FAILED', message: 'Invalid email or password' },
+      });
     }
-  }
-
-  if (!foundUser || foundUser.passwordHash !== mockPasswordHash(password)) {
-    return res.status(401).json({
-      success: false,
-      error: { code: 'AUTH_FAILED', message: 'Invalid email or password' },
+    res.json({
+      success: true,
+      data: {
+        user: { id: foundUser.id, name: foundUser.name, email: foundUser.email },
+        accessToken: foundUser.id,
+        refreshToken: `refresh-${foundUser.id}`,
+      },
+      message: 'Login successful',
     });
+  } catch (error) {
+    next(error);
   }
-
-  res.json({
-    success: true,
-    data: {
-      user: { id: foundUser.id, name: foundUser.name, email: foundUser.email },
-      accessToken: foundUser.id,
-      refreshToken: `refresh-${foundUser.id}`,
-    },
-    message: 'Login successful',
-  });
 });
 
 app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
@@ -286,7 +355,7 @@ app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+app.post('/api/auth/reset-password', async (req: Request, res: Response, next: NextFunction) => {
   const { email, newPassword } = req.body;
   if (!email || !newPassword) {
     return res.status(400).json({
@@ -295,24 +364,21 @@ app.post('/api/auth/reset-password', (req: Request, res: Response) => {
     });
   }
 
-  for (const u of users.values()) {
-    if (u.email.toLowerCase() === email.toLowerCase()) {
-      u.passwordHash = mockPasswordHash(newPassword);
-      u.updatedAt = new Date().toISOString();
-      return res.json({
-        success: true,
-        message: 'Password has been successfully reset',
-      });
+  try {
+    const result = await db.query(
+      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE LOWER(email) = LOWER($2)',
+      [mockPasswordHash(newPassword), email.trim()],
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User account not found' } });
     }
+    res.json({ success: true, message: 'Password has been successfully reset' });
+  } catch (error) {
+    next(error);
   }
-
-  res.status(404).json({
-    success: false,
-    error: { code: 'USER_NOT_FOUND', message: 'User account not found' },
-  });
 });
 
-app.post('/api/auth/refresh', (req: Request, res: Response) => {
+app.post('/api/auth/refresh', async (req: Request, res: Response, next: NextFunction) => {
   const { refreshToken } = req.body;
   if (!refreshToken) {
     return res.status(400).json({
@@ -321,20 +387,15 @@ app.post('/api/auth/refresh', (req: Request, res: Response) => {
     });
   }
   const userId = refreshToken.replace('refresh-', '');
-  const user = users.get(userId);
-  if (!user) {
-    return res.status(401).json({
-      success: false,
-      error: { code: 'INVALID_TOKEN', message: 'Invalid or expired refresh token' },
-    });
+  try {
+    const result = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (result.rowCount === 0) {
+      return res.status(401).json({ success: false, error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
+    }
+    res.json({ success: true, data: { accessToken: userId, refreshToken: `refresh-${userId}` } });
+  } catch (error) {
+    next(error);
   }
-  res.json({
-    success: true,
-    data: {
-      accessToken: user.id,
-      refreshToken: `refresh-${user.id}`,
-    },
-  });
 });
 
 app.post('/api/auth/logout', (_req: Request, res: Response) => {
@@ -362,17 +423,21 @@ app.post('/api/ocr/extract', authMiddleware, async (req: Request, res: Response)
   let fieldConfidences: Record<string, number> = {};
 
   try {
-    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
+    const hasGeminiKey = Boolean(ai && geminiApiKey !== 'MY_GEMINI_API_KEY');
 
     if (hasGeminiKey) {
       const parts: any[] = [];
 
       if (imageBase64) {
-        const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+        const imageMatch = imageBase64.match(/^data:(image\/(?:jpeg|jpg|png|webp|gif));base64,([\s\S]+)$/i);
+        if (!imageMatch) {
+          throw new Error('Unsupported image format. Upload a JPEG, PNG, WEBP, or GIF image.');
+        }
+        const mimeType = imageMatch[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : imageMatch[1].toLowerCase();
         parts.push({
           inlineData: {
-            mimeType: 'image/jpeg',
-            data: cleanBase64,
+            mimeType,
+            data: imageMatch[2],
           },
         });
         parts.push({
@@ -418,8 +483,8 @@ Also provide a confidence score (0.0 to 1.0) for each field in "fieldConfidences
         });
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+      const response = await withTimeout(ai!.models.generateContent({
+        model: process.env.AI_MODEL || 'gemini-3.8-flash',
         contents: { parts },
         config: {
           responseMimeType: 'application/json',
@@ -455,7 +520,7 @@ Also provide a confidence score (0.0 to 1.0) for each field in "fieldConfidences
             required: ['name', 'company'],
           },
         },
-      });
+      }), geminiTimeoutMs);
 
       const parsedJson = JSON.parse(response.text || '{}');
       if (parsedJson.rawText) {
@@ -523,130 +588,73 @@ Also provide a confidence score (0.0 to 1.0) for each field in "fieldConfidences
 // -------------------------------------------------------------
 // Duplicate Detection Endpoint
 // -------------------------------------------------------------
-app.post('/api/contacts/check-duplicate', authMiddleware, (req: Request, res: Response) => {
+app.post('/api/contacts/check-duplicate', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
   const { email, phone, company, name } = req.body;
-
-  const userContacts = Array.from(contacts.values()).filter(
-    (c) => c.userId === user.id && !c.deletedAt
-  );
-
-  const cleanPhone = (p: string) => (p || '').replace(/\D/g, '');
-  const reqCleanPhone = cleanPhone(phone);
-
-  let duplicate: Contact | null = null;
-  let matchType = '';
-
-  for (const c of userContacts) {
-    // 1. Email check
-    if (email && c.email && c.email.trim().toLowerCase() === email.trim().toLowerCase()) {
-      duplicate = c;
-      matchType = 'email';
-      break;
+  try {
+    const phoneDigits = (phone || '').replace(/\D/g, '');
+    const result = await db.query(
+      `SELECT *,
+        CASE
+          WHEN $2 <> '' AND LOWER(email) = LOWER($2) THEN 'email'
+          WHEN LENGTH($3) >= 7 AND REGEXP_REPLACE(phone, '\\D', '', 'g') = $3 THEN 'phone'
+          WHEN $4 <> '' AND $5 <> '' AND LOWER(name) = LOWER($4) AND LOWER(company) = LOWER($5) THEN 'name_and_company'
+        END AS match_type
+       FROM contacts
+       WHERE user_id = $1 AND deleted_at IS NULL
+         AND (($2 <> '' AND LOWER(email) = LOWER($2))
+           OR (LENGTH($3) >= 7 AND REGEXP_REPLACE(phone, '\\D', '', 'g') = $3)
+           OR ($4 <> '' AND $5 <> '' AND LOWER(name) = LOWER($4) AND LOWER(company) = LOWER($5)))
+       LIMIT 1`,
+      [user.id, (email || '').trim(), phoneDigits, (name || '').trim(), (company || '').trim()],
+    );
+    if (result.rowCount) {
+      return res.json({ success: true, data: { isDuplicate: true, matchType: result.rows[0].match_type, existingContact: toContact(result.rows[0]) } });
     }
-    // 2. Phone check
-    if (reqCleanPhone && reqCleanPhone.length >= 7 && cleanPhone(c.phone) === reqCleanPhone) {
-      duplicate = c;
-      matchType = 'phone';
-      break;
-    }
-    // 3. Name + Company match
-    if (
-      name &&
-      company &&
-      c.name.trim().toLowerCase() === name.trim().toLowerCase() &&
-      c.company.trim().toLowerCase() === company.trim().toLowerCase()
-    ) {
-      duplicate = c;
-      matchType = 'name_and_company';
-      break;
-    }
+    res.json({ success: true, data: { isDuplicate: false } });
+  } catch (error) {
+    next(error);
   }
-
-  if (duplicate) {
-    return res.json({
-      success: true,
-      data: {
-        isDuplicate: true,
-        matchType,
-        existingContact: duplicate,
-      },
-    });
-  }
-
-  res.json({
-    success: true,
-    data: {
-      isDuplicate: false,
-    },
-  });
 });
 
 // -------------------------------------------------------------
 // Contacts CRUD Endpoints
 // -------------------------------------------------------------
-app.get('/api/contacts', authMiddleware, (req: Request, res: Response) => {
+app.get('/api/contacts', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
   const { q, source, sortBy = 'createdAt', order = 'desc' } = req.query;
-
-  let list = Array.from(contacts.values()).filter(
-    (c) => c.userId === user.id && !c.deletedAt
-  );
-
-  if (q && typeof q === 'string') {
-    const query = q.toLowerCase().trim();
-    list = list.filter((c) =>
-      c.name.toLowerCase().includes(query) ||
-      c.company.toLowerCase().includes(query) ||
-      c.designation.toLowerCase().includes(query) ||
-      c.email.toLowerCase().includes(query) ||
-      c.phone.includes(query) ||
-      c.city.toLowerCase().includes(query)
+  const sortColumns: Record<string, string> = { name: 'name', company: 'company', createdAt: 'created_at', updatedAt: 'updated_at' };
+  const sortColumn = sortColumns[String(sortBy)] || 'created_at';
+  const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
+  const query = typeof q === 'string' ? q.trim() : '';
+  try {
+    const result = await db.query(
+      `SELECT * FROM contacts
+       WHERE user_id = $1 AND deleted_at IS NULL
+         AND ($2 = '' OR CONCAT_WS(' ', name, company, designation, email, phone, city) ILIKE '%' || $2 || '%')
+         AND ($3 = '' OR source = $3)
+       ORDER BY ${sortColumn} ${sortOrder}`,
+      [user.id, query, source && source !== 'all' ? source : ''],
     );
+    const contacts = result.rows.map(toContact);
+    res.json({ success: true, data: { contacts, total: contacts.length } });
+  } catch (error) {
+    next(error);
   }
-
-  if (source && source !== 'all') {
-    list = list.filter((c) => c.source === source);
-  }
-
-  list.sort((a: any, b: any) => {
-    let valA = a[sortBy as string] || '';
-    let valB = b[sortBy as string] || '';
-    if (typeof valA === 'string') valA = valA.toLowerCase();
-    if (typeof valB === 'string') valB = valB.toLowerCase();
-    if (order === 'asc') {
-      return valA > valB ? 1 : -1;
-    }
-    return valA < valB ? 1 : -1;
-  });
-
-  res.json({
-    success: true,
-    data: {
-      contacts: list,
-      total: list.length,
-    },
-  });
 });
 
-app.get('/api/contacts/:id', authMiddleware, (req: Request, res: Response) => {
+app.get('/api/contacts/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
-  const contact = contacts.get(req.params.id);
-
-  if (!contact || contact.userId !== user.id || contact.deletedAt) {
-    return res.status(404).json({
-      success: false,
-      error: { code: 'NOT_FOUND', message: 'Contact not found' },
-    });
+  try {
+    const result = await db.query('SELECT * FROM contacts WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [req.params.id, user.id]);
+    if (!result.rowCount) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Contact not found' } });
+    res.json({ success: true, data: { contact: toContact(result.rows[0]) } });
+  } catch (error) {
+    next(error);
   }
-
-  res.json({
-    success: true,
-    data: { contact },
-  });
 });
 
-app.post('/api/contacts', authMiddleware, (req: Request, res: Response) => {
+app.post('/api/contacts', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
   const {
     name,
@@ -674,15 +682,12 @@ app.post('/api/contacts', authMiddleware, (req: Request, res: Response) => {
     });
   }
 
-  const id = `c-${Date.now()}`;
-  const now = new Date().toISOString();
-
   // Save image to local project directory folder instead of cloud bucket
   let storedImageUrl = imageUrl;
   if (imageUrl && imageUrl.startsWith('data:image/')) {
     try {
       const base64Data = imageUrl.replace(/^data:image\/\w+;base64,/, '');
-      const filename = `card-${id}.jpg`;
+      const filename = `card-${Date.now()}.jpg`;
       const filePath = path.join(UPLOAD_DIR, filename);
       fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
       storedImageUrl = `/uploads/cards/${filename}`;
@@ -691,138 +696,89 @@ app.post('/api/contacts', authMiddleware, (req: Request, res: Response) => {
     }
   }
 
-  const newContact: Contact = {
-    id,
-    userId: user.id,
-    name: name.trim(),
-    designation: designation.trim(),
-    company: company.trim(),
-    email: email.trim(),
-    phone: phone.trim(),
-    website: website.trim(),
-    address: address.trim(),
-    city: city.trim(),
-    state: state.trim(),
-    country: country.trim(),
-    linkedin: linkedin.trim(),
-    notes: notes.trim(),
-    source,
-    rawOcrText,
-    imageUrl: storedImageUrl,
-    ocrConfidence,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  contacts.set(id, newContact);
-
-  // Add scan log
-  if (source === 'scanned') {
-    scanLogs.unshift({
-      id: `scan-${Date.now()}`,
-      userId: user.id,
-      contactId: id,
-      contactName: newContact.name,
-      companyName: newContact.company,
-      rawOcrText,
-      imageUrl: storedImageUrl,
-      ocrConfidence,
-      createdAt: now,
-    });
+  try {
+    const result = await db.query(
+      `INSERT INTO contacts (
+        user_id, name, designation, company, email, phone, website, address, city, state,
+        country, linkedin, notes, source, raw_ocr_text, image_url, ocr_confidence
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      RETURNING *`,
+      [user.id, name.trim(), designation.trim(), company.trim(), email.trim(), phone.trim(), website.trim(), address.trim(), city.trim(), state.trim(), country.trim(), linkedin.trim(), notes.trim(), source, rawOcrText, storedImageUrl || null, ocrConfidence],
+    );
+    const newContact = toContact(result.rows[0]);
+    if (source === 'scanned') {
+      await db.query(
+        'INSERT INTO scan_logs (user_id, contact_id, raw_ocr_text, image_url, ocr_confidence) VALUES ($1, $2, $3, $4, $5)',
+        [user.id, newContact.id, rawOcrText, storedImageUrl || null, ocrConfidence],
+      );
+    }
+    res.status(201).json({ success: true, data: { contact: newContact }, message: 'Contact created successfully' });
+  } catch (error) {
+    next(error);
   }
-
-  res.status(201).json({
-    success: true,
-    data: { contact: newContact },
-    message: 'Contact created successfully',
-  });
 });
 
-app.put('/api/contacts/:id', authMiddleware, (req: Request, res: Response) => {
+app.put('/api/contacts/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
-  const existing = contacts.get(req.params.id);
-
-  if (!existing || existing.userId !== user.id || existing.deletedAt) {
-    return res.status(404).json({
-      success: false,
-      error: { code: 'NOT_FOUND', message: 'Contact not found' },
-    });
+  const fields = ['name', 'designation', 'company', 'email', 'phone', 'website', 'address', 'city', 'state', 'country', 'linkedin', 'notes', 'source', 'rawOcrText', 'imageUrl', 'ocrConfidence'];
+  const columns: Record<string, string> = { rawOcrText: 'raw_ocr_text', imageUrl: 'image_url', ocrConfidence: 'ocr_confidence' };
+  const updates = fields.filter((field) => field in req.body);
+  if (!updates.length) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'No contact fields supplied' } });
+  const assignments = updates.map((field, index) => `${columns[field] || field} = $${index + 3}`);
+  const values = updates.map((field) => typeof req.body[field] === 'string' ? req.body[field].trim() : req.body[field]);
+  try {
+    const result = await db.query(
+      `UPDATE contacts SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING *`,
+      [req.params.id, user.id, ...values],
+    );
+    if (!result.rowCount) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Contact not found' } });
+    res.json({ success: true, data: { contact: toContact(result.rows[0]) }, message: 'Contact updated successfully' });
+  } catch (error) {
+    next(error);
   }
-
-  const updated: Contact = {
-    ...existing,
-    ...req.body,
-    id: existing.id,
-    userId: existing.userId,
-    updatedAt: new Date().toISOString(),
-  };
-
-  contacts.set(existing.id, updated);
-
-  res.json({
-    success: true,
-    data: { contact: updated },
-    message: 'Contact updated successfully',
-  });
 });
 
-app.delete('/api/contacts/:id', authMiddleware, (req: Request, res: Response) => {
+app.delete('/api/contacts/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
-  const existing = contacts.get(req.params.id);
-
-  if (!existing || existing.userId !== user.id || existing.deletedAt) {
-    return res.status(404).json({
-      success: false,
-      error: { code: 'NOT_FOUND', message: 'Contact not found' },
-    });
+  try {
+    const result = await db.query('UPDATE contacts SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [req.params.id, user.id]);
+    if (!result.rowCount) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Contact not found' } });
+    res.json({ success: true, message: 'Contact deleted successfully' });
+  } catch (error) {
+    next(error);
   }
-
-  // Soft delete per PostgreSQL schema
-  existing.deletedAt = new Date().toISOString();
-  contacts.set(existing.id, existing);
-
-  res.json({
-    success: true,
-    message: 'Contact deleted successfully',
-  });
 });
 
 // -------------------------------------------------------------
 // Scan History & Dashboard Metrics
 // -------------------------------------------------------------
-app.get('/api/scans', authMiddleware, (req: Request, res: Response) => {
+app.get('/api/scans', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
-  const userScans = scanLogs.filter((s) => s.userId === user.id);
-  res.json({
-    success: true,
-    data: { scans: userScans },
-  });
+  try {
+    const result = await db.query(
+      `SELECT scan_logs.*, contacts.name AS contact_name, contacts.company AS company_name
+       FROM scan_logs LEFT JOIN contacts ON contacts.id = scan_logs.contact_id
+       WHERE scan_logs.user_id = $1 ORDER BY scan_logs.created_at DESC`,
+      [user.id],
+    );
+    res.json({ success: true, data: { scans: result.rows.map(toScanLog) } });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get('/api/metrics', authMiddleware, (req: Request, res: Response) => {
+app.get('/api/metrics', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   const user = (req as any).user;
-  const userContacts = Array.from(contacts.values()).filter(
-    (c) => c.userId === user.id && !c.deletedAt
-  );
-
-  const thisMonthScans = userContacts.filter((c) => {
-    const created = new Date(c.createdAt);
-    const now = new Date();
-    return (
-      created.getMonth() === now.getMonth() &&
-      created.getFullYear() === now.getFullYear() &&
-      c.source === 'scanned'
-    );
-  }).length;
-
-  res.json({
-    success: true,
-    data: {
-      totalContacts: userContacts.length,
-      scannedThisMonth: thisMonthScans,
-      recentContacts: userContacts.slice(0, 5),
-    },
-  });
+  try {
+    const [summary, recent] = await Promise.all([
+      db.query(`SELECT COUNT(*)::int AS total_contacts, COUNT(*) FILTER (WHERE source = 'scanned' AND created_at >= date_trunc('month', CURRENT_TIMESTAMP))::int AS scanned_this_month FROM contacts WHERE user_id = $1 AND deleted_at IS NULL`, [user.id]),
+      db.query('SELECT * FROM contacts WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 5', [user.id]),
+    ]);
+    res.json({ success: true, data: { totalContacts: summary.rows[0].total_contacts, scannedThisMonth: summary.rows[0].scanned_this_month, recentContacts: recent.rows.map(toContact) } });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // -------------------------------------------------------------

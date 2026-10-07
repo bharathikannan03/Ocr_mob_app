@@ -21,6 +21,7 @@ export default function App() {
 
   const [currentTab, setCurrentTab] = useState<'home' | 'scan' | 'contacts' | 'history' | 'specs'>('home');
   const [scanFlowState, setScanFlowState] = useState<'idle' | 'processing' | 'review'>('idle');
+  const [isExtractionComplete, setIsExtractionComplete] = useState(false);
 
   // Contact & Scan State
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -90,6 +91,7 @@ export default function App() {
   // Handle Card Shutter Capture
   const handleCardCapture = async (imageData: string, rawText?: string) => {
     setCapturedImageData(imageData);
+    setIsExtractionComplete(false);
     setScanFlowState('processing');
 
     try {
@@ -131,6 +133,8 @@ export default function App() {
         notes: '',
       });
       setCapturedRawText(rawText || '');
+    } finally {
+      setIsExtractionComplete(true);
     }
   };
 
@@ -341,6 +345,7 @@ export default function App() {
         ) : scanFlowState === 'processing' ? (
           <ProcessingScreen
             cardPreview={capturedImageData || undefined}
+            isExtractionComplete={isExtractionComplete}
             onFinished={handleProcessingFinished}
           />
         ) : scanFlowState === 'review' && extractedData ? (

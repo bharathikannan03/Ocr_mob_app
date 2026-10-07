@@ -3,6 +3,7 @@ import { Camera, FileText, Cpu, CheckCircle2, Sparkles } from 'lucide-react';
 
 interface ProcessingScreenProps {
   cardPreview?: string;
+  isExtractionComplete: boolean;
   onFinished: () => void;
 }
 
@@ -13,14 +14,15 @@ const STEPS = [
   { icon: Sparkles, title: 'Validating & preparing contact review', desc: 'Sanitizing phone, email, and locations' },
 ];
 
-export const ProcessingScreen: React.FC<ProcessingScreenProps> = ({ cardPreview, onFinished }) => {
+export const ProcessingScreen: React.FC<ProcessingScreenProps> = ({ cardPreview, isExtractionComplete, onFinished }) => {
   const [currentStep, setCurrentStep] = useState(0);
+  const [animationFinished, setAnimationFinished] = useState(false);
 
   useEffect(() => {
     const timer1 = setTimeout(() => setCurrentStep(1), 500);
     const timer2 = setTimeout(() => setCurrentStep(2), 1100);
     const timer3 = setTimeout(() => setCurrentStep(3), 1800);
-    const timer4 = setTimeout(() => onFinished(), 2400);
+    const timer4 = setTimeout(() => setAnimationFinished(true), 2400);
 
     return () => {
       clearTimeout(timer1);
@@ -28,7 +30,11 @@ export const ProcessingScreen: React.FC<ProcessingScreenProps> = ({ cardPreview,
       clearTimeout(timer3);
       clearTimeout(timer4);
     };
-  }, [onFinished]);
+  }, []);
+
+  useEffect(() => {
+    if (animationFinished && isExtractionComplete) onFinished();
+  }, [animationFinished, isExtractionComplete, onFinished]);
 
   return (
     <div className="flex flex-col h-full bg-slate-900 text-white p-6 justify-between select-none">

@@ -6,11 +6,20 @@ interface CameraScanScreenProps {
   onCancel: () => void;
 }
 
+type CardPreview = {
+  company: string;
+  tag: string;
+  name: string;
+  role: string;
+  rawText: string;
+};
+
 export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, onCancel }) => {
-  const [useWebcam, setUseWebcam] = useState(false);
+  const [useWebcam, setUseWebcam] = useState(true);
   const [webcamError, setWebcamError] = useState<string | null>(null);
   const [torchOn, setTorchOn] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const selectedSample = null as CardPreview | null;
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [capturedText, setCapturedText] = useState<string | null>(null);
 
@@ -74,11 +83,33 @@ export const CameraScanScreen: React.FC<CameraScanScreenProps> = ({ onCapture, o
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setCapturedPreview(dataUrl);
-      setCapturedText(null);
+      const image = new Image();
+      image.onload = () => {
+        const maxDimension = 2048;
+        const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+
+        if (!context) {
+          setWebcamError('Unable to prepare this image. Please choose another card photo.');
+          return;
+        }
+
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        setCapturedPreview(canvas.toDataURL('image/jpeg', 0.92));
+        setCapturedText(null);
+        setWebcamError(null);
+      };
+      image.onerror = () => {
+        setWebcamError('This image format cannot be read. Please upload a JPEG, PNG, or WEBP image.');
+      };
+      image.src = event.target?.result as string;
     };
+    reader.onerror = () => setWebcamError('Unable to read the selected image. Please try again.');
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const confirmCapture = () => {
