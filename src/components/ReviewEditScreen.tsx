@@ -39,7 +39,7 @@ export const ReviewEditScreen: React.FC<ReviewEditScreenProps> = ({
   onRetake,
   onDiscard,
 }) => {
-  const [formData, setFormData] = useState<ExtractedContact>({ ...initialContact });
+  const [formData, setFormData] = useState<ExtractedContact>({ ...initialContact, notes: '' });
   const [showImagePreview, setShowImagePreview] = useState(false);
   const [showRawOcr, setShowRawOcr] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
@@ -337,6 +337,20 @@ export const ReviewEditScreen: React.FC<ReviewEditScreenProps> = ({
               value={formData.linkedin || ''}
               onChange={(e) => handleChange('linkedin', e.target.value)}
               placeholder="e.g. https://linkedin.com/in/rajkumar"
+              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:border-blue-500 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
+            />
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-1">
+              <FileText className="w-3.5 h-3.5 text-slate-600" />
+              <span>Notes</span>
+            </label>
+            <textarea
+              rows={3}
+              value={formData.notes}
+              onChange={(e) => handleChange('notes', e.target.value)}
               className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:border-blue-500 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20"
             />
           </div>

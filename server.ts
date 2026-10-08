@@ -686,6 +686,7 @@ app.post('/api/integrations/leads', authMiddleware, async (req: Request, res: Re
     city = '',
     state = '',
     country = '',
+    notes = '',
   } = req.body;
 
   const { firstName, lastName } = splitContactName(String(name));
@@ -716,6 +717,7 @@ app.post('/api/integrations/leads', authMiddleware, async (req: Request, res: Re
     city: String(city).trim(),
     state: String(state).trim(),
     country: String(country).trim(),
+    notes: String(notes).trim(),
   };
 
   try {
